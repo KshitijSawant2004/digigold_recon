@@ -258,34 +258,97 @@ def reconcile_files(finfinity_file, cashfree_file, augmont_file):
         (df_results['In Augmont?'] == 'NO')
     ].copy()
     
-    # Create summary statistics
+    # Calculate match statistics
+    matched_in_cashfree = len(df_results[df_results['In Cashfree?'] == 'YES'])
+    not_matched_in_cashfree = len(df_results[df_results['In Cashfree?'] == 'NO'])
+    
+    matched_in_augmont = len(df_results[df_results['In Augmont?'] == 'YES'])
+    not_matched_in_augmont = len(df_results[df_results['In Augmont?'] == 'NO'])
+    
+    matched_in_both = len(df_results[(df_results['In Cashfree?'] == 'YES') & (df_results['In Augmont?'] == 'YES')])
+    not_matched_in_both = len(df_results[(df_results['In Cashfree?'] == 'NO') | (df_results['In Augmont?'] == 'NO')])
+    
+    # Create summary statistics in the requested format
     summary_data = {
         'Metric': [
             'Total Finfinity Records',
             'Total Cashfree Records',
             'Total Augmont Records',
-            'Records Found in Cashfree',
-            'Records Found in Augmont',
-            'Records Missing in Cashfree',
-            'Records Missing in Augmont',
-            'Records Missing in Both'
+            '',  # Empty row for spacing
+            'Finfinity Records in Cashfree',
+            'Finfinity Records in Augmont',
+            'Finfinity Records in Cashfree & Augmont'
         ],
-        'Count': [
-            len(df_finfinity),
-            len(df_cashfree),
-            len(df_augmont),
-            len(df_results[df_results['In Cashfree?'] == 'YES']),
-            len(df_results[df_results['In Augmont?'] == 'YES']),
-            len(df_missing_cashfree),
-            len(df_missing_augmont),
-            len(df_missing_both)
+        'Not Matched': [
+            '',
+            '',
+            '',
+            '',
+            not_matched_in_cashfree,
+            not_matched_in_augmont,
+            not_matched_in_both
+        ],
+        'Matched': [
+            '',
+            '',
+            '',
+            '',
+            matched_in_cashfree,
+            matched_in_augmont,
+            matched_in_both
         ]
     }
-    df_summary = pd.DataFrame(summary_data)
     
-    # Create action summary
+    # For total counts, put them in 'Not Matched' column (first data column)
+    summary_data['Not Matched'][0] = len(df_finfinity)
+    summary_data['Not Matched'][1] = len(df_cashfree)
+    summary_data['Not Matched'][2] = len(df_augmont)
+    
+    # Rename first column to 'Count' for the totals section
+    df_summary = pd.DataFrame(summary_data)
+    df_summary.columns = ['Metric', 'Count', 'Matched']
+    
+    # Fix column header - Count should only show for totals, then Not Matched/Matched for comparison
+    # Create a cleaner format
+    summary_rows = [
+        {'Metric': 'Total Finfinity Records', 'Count': len(df_finfinity)},
+        {'Metric': 'Total Cashfree Records', 'Count': len(df_cashfree)},
+        {'Metric': 'Total Augmont Records', 'Count': len(df_augmont)},
+        {'Metric': '', 'Count': ''},
+        {'Metric': '', 'Count': 'Not Matched', 'Matched': 'Matched'},
+        {'Metric': 'Finfinity Records in Cashfree', 'Count': not_matched_in_cashfree, 'Matched': matched_in_cashfree},
+        {'Metric': 'Finfinity Records in Augmont', 'Count': not_matched_in_augmont, 'Matched': matched_in_augmont},
+        {'Metric': 'Finfinity Records in Cashfree & Augmont', 'Count': not_matched_in_both, 'Matched': matched_in_both},
+    ]
+    df_summary = pd.DataFrame(summary_rows)
+    
+    # Decision category descriptions
+    category_descriptions = {
+        'UNCATEGORIZED': 'Records missing in Cashfree or Augmont - needs manual review to identify root cause',
+        'USER_DROPPED': 'User abandoned payment flow before completing - normal customer behavior, no action needed',
+        'INTERNAL_FAILURE': 'Finfinity shows FAILED status - internal system error occurred, check logs',
+        'ORDER_ACTIVE_PAYMENT_FAILED': 'Order is ACTIVE but payment FAILED - order should be cancelled immediately',
+        'REFUND_REQUIRED': 'Payment SUCCESS but Augmont order CANCELLED - customer paid but order failed, refund needed',
+        'INCONSISTENT_STATE': 'Finfinity shows PAID but Cashfree shows FAILED - critical data mismatch, urgent investigation',
+        'FULLY_RECONCILED': 'All systems aligned - payment successful, order completed, no action needed',
+        'PAYMENT_FAILED': 'Payment failed in Cashfree - no money collected, safe to ignore',
+        'PAYMENT_IN_PROGRESS': 'Both Finfinity and Cashfree show PENDING - payment still processing, wait and retry',
+        'PAYMENT_NOT_CONFIRMED': 'Cashfree shows PENDING - payment not yet confirmed, monitor and retry',
+        'SYNC_PENDING': 'Finfinity PENDING but Cashfree SUCCESS - internal sync delay, monitor for auto-resolution',
+        'GATEWAY_SUCCESS_INTERNAL_FAIL': 'Cashfree SUCCESS but Finfinity FAILED - payment received but internal error, investigate',
+        'PAYMENT_SUCCESS_ORDER_MISSING': 'Cashfree SUCCESS but no Augmont order - payment collected but order not created, create order or refund'
+    }
+    
+    # Create action summary with descriptions, sorted by count descending (funnel style)
     action_summary = df_results.groupby(['Action_Required', 'Decision_Category', 'Priority']).size().reset_index(name='Count')
-    action_summary = action_summary.sort_values(['Priority', 'Count'], ascending=[True, False])
+    action_summary = action_summary.sort_values('Count', ascending=False)  # Funnel: highest count first
+    
+    # Add description column
+    action_summary['Description'] = action_summary['Decision_Category'].map(category_descriptions)
+    action_summary['Description'] = action_summary['Description'].fillna('No description available')
+    
+    # Reorder columns for better readability
+    action_summary = action_summary[['Count', 'Action_Required', 'Decision_Category', 'Priority', 'Description']]
     
     # Create status combinations summary
     status_combinations = df_results.groupby('Status_Combination').size().reset_index(name='Count')
